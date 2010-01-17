@@ -1,0 +1,600 @@
+<?php
+
+/**
+ * Created by wplaat (Plaatsoft)
+ *
+ * This software is open source and may be copied, distributed or modified under the terms of the GNU General Public License (GPL) Version 2
+ *
+ * For more information visit the following website.
+ * Website : http://www.plaatsoft.nl 
+ *
+ * Or send an email to the following address.
+ * Email   : info@plaatsoft.nl
+ */
+
+/**
+ * help hook()
+ * @return help texts
+ */
+function event_notification_help($section) {
+
+  $output = '';
+  switch ($section) {
+    case 'admin/modules#description':
+      $output .= t('Event email notication module');
+      break;
+  }
+  return $output;
+}
+
+function event_notification_mail($key, &$message, $params) 
+{
+  $message['subject'] = $params['subject']; 
+  $message['body'] = $params['body'];
+}
+
+/**
+ * menu hook()
+ * @return array of menu items
+ */
+function event_notification_menu() 
+{
+  $items['admin/settings/event_notification'] = array(
+                   'title' => t('Event email notification'),
+                   'description' => t('Settings of event email notification.'),
+                   'page callback' => 'drupal_get_form',
+                   'page arguments' => array('event_notification_settings'),
+                   'access arguments' => user_access('administer site configuration'),
+                   'type' => MENU_NORMAL_ITEM,
+                  );
+
+  $items['event_notification'] = array(
+                   'title' => t('CSV upload'),
+                   'page callback' => 'upload_csv_events',
+                   'access arguments' => user_access('administer site configuration'),
+                   'type' => MENU_CALLBACK, 
+                  );
+
+  return $items;
+}
+
+/**
+ * Module configuration settings
+ * @return settings HTML or deny access
+ */
+function event_notification_settings() {
+
+  //only administrators can access this module
+  if (!user_access('access administration pages')) {
+    return drupal_access_denied();
+  }
+
+  $form['settings_general'] = array('#type' => 'fieldset', '#title' => t('General settings'));
+
+  $form['settings_general']['event_notification_enable'] = array(
+     '#type' => 'select',
+     '#title' => t('Enable event notification'),
+     '#default_value' => variable_get('event_notification_enable',1),
+     '#options' => array( 0 => t('Disable'), 1 => t('Enable') ),
+     '#description' => t('Enable / Disable event notification module.'));
+
+ $form['settings_general']['event_notification_period'] = array(
+     '#type' => 'textfield',
+     '#title' => t('Period'),
+     '#default_value' => variable_get('event_notification_period', '24'),
+     '#rows' => 1,
+     '#description' => t("Email notification is send X hours before start of event.") );
+
+ $form['settings_general']['event_notification_checktime'] = array(
+     '#type' => 'textfield',
+     '#title' => t('Period'),
+     '#default_value' => variable_get('event_notification_checktime', '0'),
+     '#rows' => 1,
+     '#description' => t("Email notification is check on X hour of the day.") );
+
+ $form['settings_general']['event_notification_footer'] = array(
+     '#type' => 'textarea',
+     '#title' => t('Footer for e-mail body'),
+     '#default_value' => variable_get('event_notification_footer',"Please visit us soon again!\r\n"),
+     '#rows' => 10,
+     '#description' => t('Enter free text with will be added at the end of the notification email') );
+
+ $form['settings_general']['event_sender_address'] = array(
+     '#type' => 'textfield',
+     '#title' => t('Sender email address'),
+     '#default_value' => variable_get('event_sender_address', variable_get('site_mail', ini_get('sendmail_from')) ),
+     '#rows' => 1,
+     '#description' => t("This email address is fill in as sender.") );
+
+ $form['csv_event_settings'] = array('#type' => 'fieldset', '#title' => t('Event CSV settings'));
+
+ $form['csv_event_settings']['event_message_title'] = array(
+     '#type' => 'textfield',
+     '#title' => t('Title of the csv upload event message(s)'),
+     '#default_value' => variable_get('event_message_title','Event CSV Upload Message'),
+     '#maxlength' => 180,
+     '#description' => t('Customize the subject of the message event.') );
+
+ $form['csv_event_settings']['event_message_body'] = array(
+     '#type' => 'textarea',
+     '#title' => t('Body of csv upload event message(s)'),
+     '#default_value' => variable_get('event_message_body',"The body"),
+     '#rows' => 15,
+     '#description' => t('Customize the body .') .' '. t('Available variables are: %block1, %block2, %block3') );
+
+  return system_settings_form($form);
+
+}
+
+/**
+  * Remove XML tag out content
+  */
+function filterBody($message)
+{
+  $debug=0;
+  $tmp="";
+  $token = strtok($message, "\n");
+  while ($token != false)
+  {
+    if (strchr($token, "<")==false)
+    {
+      $tmp=$tmp.$token."\n";
+    }
+    else
+    {
+       // remove XML tag
+       $start_pos=strpos($token, "<");
+       if ($debug==1) echo "start_pos=".$start_pos."<br>";
+       $end_pos=strpos($token, ">");
+       if ($debug==1) echo "end_pos=".$end_pos."<br>";
+
+       $tmp=$tmp.substr($token,0,$start_pos).substr($token,$end_pos+1,strlen($token)-$end_pos)."\n";
+    }
+
+    $token = strtok("\n");
+  }
+  return $tmp;
+}
+
+/**
+  * Find token in XML string return found value
+  */
+function getToken($message)
+{
+  $debug=1;
+  $token = strtok($message, "\n");
+  $email="";
+  while ($token != false)
+  {
+    $token = str_replace("<", "", $token);
+    $token = str_replace(">", "", $token);
+    if ($title = strstr($token, "event_notification"))
+    {
+      if ($debug==1) echo "--------<br>";
+      // Filter content
+      $value = str_replace("/", "", $token);
+      $value = str_replace("email", "", $value);
+      $value = str_replace("event_notification", "", $value);
+      if ($debug==1) echo "value=[".$value."]<br>";
+      $value = substr($value,strpos($value,"=")+1,strlen($value));
+      $value = str_replace(" ", "", $value);
+      if ($debug==1) echo "value=[".$value."]<br>";
+
+      // check valied email address
+      if (!stripos($value,"@"))
+      {
+         if ($debug==1) echo "Invalid email address check addressbook if email can be found.<br>";
+
+         // Fetch email adres form addressbook 
+         $query='select email from addressbook_member where mid='.$value;
+  	 if ($debug==1) echo "Query: ".$query."<br>";
+         $queryResult = db_query($query);
+         $data = db_fetch_object($queryResult);
+	 $value=$data->email;
+      }
+
+      if ($debug==1) echo "value=[".$value."]<br>";
+      if ($value!="")
+      {
+        if ($email=="") 
+        { 
+          $email.=trim($value);
+        }
+        else
+        { 
+          $email.=",".trim($value);
+        }
+      }
+    }
+    $token = strtok("\n");
+  }
+  if ($debug==1) echo "email=".$email."<br>";
+  return $email;
+}
+
+/**
+  * Find event in future check if email must be send, if so do it!
+  */
+function event_notification_cron() 
+{
+  $debug=1;
+  // If module is enabled all event will be check.
+  if ( variable_get('event_notification_enable',1)==1 ) 
+  {
+    if ($debug==1) echo "Event Notification Module Enabled<br>";
+
+    // Check only when local time is between 00:00 and 00:59  
+    $current_time=date('H');
+    $checktime = variable_get('event_notification_checktime', '0');
+    if ($current_time==$checktime)
+    {
+      watchdog('cron', t('Event email notification cron'));
+
+      // Get local time
+      $now = _event_user_time();
+
+      // Calculate start / end stamp
+      $period= variable_get('event_notification_period', '24');
+      $startstamp = $now + ( 3600 * $period);
+      $endstamp = $now + (3600 * ($period+24));
+
+      // Fetch all event 
+      $query='select event_start, event_end, title, body from event, node_revisions where event.nid=node_revisions.nid and event_start>'.$startstamp.' order by event_start';
+      $queryResult = db_query($query);
+
+      while ($data = db_fetch_object($queryResult)) 
+      {
+	  if ($debug==1) echo "---------------------------<br>";
+
+        $event_start=$data->event_start;
+        $event_end=$data->event_end;
+        $event_title=$data->title;
+        $event_body=$data->body;
+        
+        if ($debug==1) echo "startstamp=".date('d-m-Y H:i:s',$startstamp)."<br>";
+        if ($debug==1) echo "endstamp=".date('d-m-Y H:i:s',$endstamp)."<br>";
+        if ($debug==1) echo "event_start=".date('d-m-Y H:i:s',$event_start)."<br>";
+	if ($debug==1) echo "event_title=".$event_title."<br>";
+
+        if (($event_start>=$startstamp) && ($event_start<=$endstamp))
+        {
+          $email=getToken( $event_body, "event_notification", "email");
+
+          // if email address found send email
+          if ($email!='')
+          {
+            // Check site name
+            $site_name = variable_get('site_name', 'Drupal');
+ 
+            // Get webmaster email address
+            $from=$site_name.'<'.variable_get('event_sender_address',variable_get('site_mail', ini_get('sendmail_from'))).'>';
+            
+            // Create subject 
+            $subject=t('Event reminder')." - ".$event_title;
+ 
+            // Format body
+            $body=t('Event reminder')." - ".$event_title."\r\n\r\n".
+               t('Start Event = ')._event_date('d-m-Y H:i', $event_start)."\r\n".
+               t('End Event   = ')._event_date('d-m-Y H:i', $event_end)."\r\n".
+               "\r\n\r\n".
+               filterBody($event_body).
+               "\r\n".
+               variable_get('event_notification_footer', '');
+
+            if (drupal_mail('event_notification', 'send', $email, user_preferred_language($user), array('subject'=>$subject,'body'=>$body))) 
+            {
+               watchdog('cron', t('Sent event email notification to ').$email);
+               if ($debug==1) echo "email send to [".$email."]<br>";
+            }
+            else
+	    {
+              watchdog('cron', t('Failed to sent event email notification to ').$email);
+              if ($debug==1) echo "email sending failed [".$email."]<br>";
+            }
+          }
+        }
+      }
+    }
+    else
+    {
+       if ($debug==1) echo "Current time is not between ".$checktime.":00 and ".$checktime.":59<br>Current Hour is ".date('H')."<br>";
+    }
+  }
+  else
+  {
+     if ($debug==1) echo "Event Notificatoin Module Disabled<br>";
+  }
+}
+
+/**
+ * Render a page for the csv addressbook upload
+ * @return HTML
+ */
+function upload_csv_events() 
+{
+  global $user;
+  $page = '<div class="event_notification">';
+
+  drupal_set_title(t('Event notification csv upload') );
+
+  //only administrators can access this module
+  if (!user_access('access administration pages')) 
+  {
+    return drupal_access_denied();;
+  }
+
+   // Fetch upload in a HTTP request
+  if ($_FILES['uploadedfile']['name']!='') 
+  {
+    if ( (!strstr($_FILES['uploadedfile']['name'],'.csv')) && (!strstr($_FILES['uploadedfile']['name'],'.CSV')) )
+    {
+      $page .= '<br/>';
+      $page.=t('Only CSV format is supported').'<br/>';
+      $page .= '<br/>';
+
+      $page .= '</div>';
+      return $page;
+    }
+    else
+    {
+      if (move_uploaded_file($_FILES['uploadedfile']['tmp_name'],file_directory_path().'/events_upload.csv')) {
+        watchdog('user', 'A csv file is uploaded to the event notification');
+        $page .= process_events_upload();
+      }
+      else 
+      {
+        $page .= '<br/>';
+        $page .= t('Failed to save csv file, try again!').'<br/>';
+        $page .= '<br/>';
+
+        $page .= '</div>';
+        return $page;
+      }
+    }
+  }
+
+
+  if ($_FILES['uploadedfile']['name']=='') 
+  {
+    $page .= '<form enctype="multipart/form-data" action="'.url('event_notification').'" method="POST">';
+    $page .= '<br/>';
+    $page .= '<input type="hidden" />';
+    $page .= t('Choose a csv file to upload:').' <input name="uploadedfile" type="file" />';
+
+    $page .= '<br/>';
+    $page .= '<div id="mission">';
+    $page .= t('Warning: Only csv formatted files are supported.');
+    $page .= '<br/>';
+    $page .= t('File size must not exceed').ini_get('upload_max_filesize').'B';
+    $page .= '<br/></div>';
+    $page .= '<br/>';
+
+    // Show menu Bar
+    $page .= '<table>';
+    $page .= '<tr><td>';
+    $page .= '<input type="hidden" name="fid" value="'.$fid.'" />';
+    $page .= '<input type="submit" value="'.t('Upload File').'" />';
+    $page .= '</form>';
+
+    $page .= '</table>';
+  }
+
+  $page .= '</div>';
+  print theme("page", $page);
+}
+
+/**
+ * process csv upload file.
+ * @return errors in HTML format
+ */
+function process_events_upload() 
+{
+
+  global $user;
+
+  $page = '<div class="event_notifcation">';
+  $page .= '<br/>';
+
+  $line_counter=0;
+  $csv_file_error=0;
+
+  $myFile = file_directory_path().'/events_upload.csv';
+  $fh = fopen($myFile, 'r');
+
+  $theData = fgets($fh);
+  $line_counter++;
+  while ($theData!='')
+  {
+    $line_error=0;
+
+    // Split read line in elements
+    $value=split( ';' ,$theData);
+
+    list($day, $month, $year) = split('[-]', $value[0]);
+    $event_date=$day.'-'.$month.'-'.$year;
+
+    $special_message=$value[1];
+
+    list($hour, $minute) = split('[:]', $value[2]);
+    $event_time=$hour.':'.$minute;
+
+    $event_start=mktime($hour,$minute,0,$month,$day,$year,0);
+    $event_end=$event_start+5400;
+
+    $peuter1=trim(ucfirst($value[3]));
+    $peuter_id1=event_find_user($peuter1);
+    $peuter2=trim(ucfirst($value[4]));
+    $peuter_id2=event_find_user($peuter2);
+    $peuter3=trim(ucfirst($value[5]));
+    $peuter_id3=event_find_user($peuter3);
+    $peuter4=trim(ucfirst($value[6]));
+    $peuter_id4=event_find_user($peuter4);
+    $peuter5=trim(ucfirst($value[7]));
+    $peuter_id5=event_find_user($peuter5);
+    $baby1=trim(ucfirst($value[9]));
+    $baby_id1=event_find_user($baby1);
+    $baby2=trim(ucfirst($value[10]));
+    $baby_id2=event_find_user($baby2);
+
+    $page .= '<br/><b>Event</b><br/>';
+    $page .= htmlentities($theData).'<br/>';
+    $page .= 'Event Date='.$event_date.'<br/>';
+    $page .= 'Event Time='.$event_time.'<br/>';
+    $page .= 'Special Message='.$special_message.'<br/>';
+    $page .= 'Peuter1='.htmlentities($peuter1).'  ['.$peuter_id1.']<br/>';
+    $page .= 'Peuter2='.htmlentities($peuter2).'  ['.$peuter_id2.']<br/>';
+    $page .= 'Peuter3='.htmlentities($peuter3).'  ['.$peuter_id3.']<br/>';
+    $page .= 'Peuter4='.htmlentities($peuter4).'  ['.$peuter_id4.']<br/>';
+    $page .= 'Peuter5='.htmlentities($peuter5).'  ['.$peuter_id5.']<br/>';
+    $page .= 'Baby1='.htmlentities($baby1).'  ['.$baby_id1.']<br/>';
+    $page .= 'Baby2='.htmlentities($baby2).'  ['.$baby_id2.']<br/>';
+
+    $block1 = $special_message."\r\n";
+
+    $block2 = '';
+    if ($peuter1!=null) $block2 .= htmlentities($peuter1).'</event_notification email='.$peuter_id1.'>'."\r\n";
+    if ($peuter2!=null) $block2 .= htmlentities($peuter2).'</event_notification email='.$peuter_id2.'>'."\r\n";
+    if ($peuter3!=null) $block2 .= htmlentities($peuter3).'</event_notification email='.$peuter_id3.'>'."\r\n";
+    if ($peuter4!=null) $block2 .= htmlentities($peuter4).'</event_notification email='.$peuter_id4.'>'."\r\n";
+    if ($peuter5!=null) $block2 .= htmlentities($peuter5).'</event_notification email='.$peuter_id5.'>'."\r\n";
+  
+    $block3='';
+    if ($baby1!=null) $block3 .= htmlentities($baby1).'</event_notification email='.$baby_id1.'>'."\r\n";
+    if ($baby2!=null) $block3 .= htmlentities($baby2).'</event_notification email='.$baby_id2.'>'."\r\n";
+
+    $title= variable_get('event_message_title', '');
+
+    $body= variable_get('event_message_body', '');
+    $body = str_replace("%block1", $block1, $body);
+    $body = str_replace("%block2", $block2, $body);
+    $body = str_replace("%block3", $block3, $body);
+
+    $id=save_event_node($title, $body, $event_start, $event_end);
+    $page .= 'Node '.$id.' is created</br>';
+    
+    $line_counter++;
+    $theData = fgets($fh);
+  }
+  fclose($fh);
+
+  // Delete csv file
+  unlink($myFile);
+
+  $page .= '<br/>';
+  $page .= t('CSV file processed!').'<br/>';
+  $page .= '<br/>';
+  $page .= '<form action="'.url(URL_FAMILY_LIST.'/'.$_SESSION["sort"]).'" method="POST">';
+  $page .= '<input type="submit" value="'.t('Return').'" />';
+  $page .= '</form>';
+
+  $page .= '</div>';
+  return $page;
+}
+
+function event_find_user($name) 
+{
+  global $user;
+
+  $ids=null;
+
+  if ($name != null)
+  {
+    list($name1, $name2,$name3, $name4) = split('[ ]', $name);
+    $tmp2=$name1[0];
+    if (strlen($name2)!=0) $tmp2.='%'.$name2;
+    if (strlen($name3)!=0) $tmp2.='%'.$name3;
+    if (strlen($name4)!=0) $tmp2.='%'.$name4;
+    $tmp2.='%';
+
+    $query = "select mid from addressbook_member where concat(concat(concat(concat(left(first_name,1), ' '), middle_name), ' '), last_name) 
+       like '".$tmp2."' and active_roles like '%Cr%che%'";
+    $queryResult = db_query($query);
+
+    while ($tmp = db_fetch_object($queryResult))
+    {
+       if ($ids==null)
+       {
+          $ids.=$tmp->mid;
+       }
+       else
+       {   
+          $ids.=','.$tmp->mid;
+       }
+    }
+  }
+  return $ids;
+}
+
+function save_event_node($title, $body, $event_start, $event_end)
+{
+  global $user;
+
+  $node->is_new = TRUE;
+  $node->nid = db_next_id('{node}_nid');
+  $node->vid = db_next_id('{node_revisions}_vid');
+  $node->title = $title;
+  $node->body = $body;
+  $node->teaser = $body;
+  $node->created = time();
+  $node->changed = time();
+  $node->format = 4;
+  $node->type = "event";
+  $node->uid= $user->uid;
+  $node->status = 1;   // Visible for everybody
+  $node->comment = 2;  // Allow comments
+  $node->promote = 0;
+  $node->sticky = 0;
+
+  $node->timezone = $user->timezone;
+  $node->event_start = $event_start;
+  $node->event_end = $event_end;
+  $node->timezone = event_timezone_map(variable_get('date_default_timezone', 0));
+
+  // Split off revisions data to another structure
+  $revisions_table_values = array('nid' => $node->nid, 'vid' => $node->vid,
+                     'title' => $node->title, 'body' => $node->body,
+                     'teaser' => $node->teaser, 'timestamp' => $node->changed,
+                     'uid' => $user->uid, 'format' => $node->format);
+
+  $revisions_table_types = array('nid' => '%d', 'vid' => '%d',
+                     'title' => "'%s'", 'body' => "'%s'",
+                     'teaser' => "'%s'", 'timestamp' => '%d',
+                     'uid' => '%d', 'format' => '%d');
+
+  // Only store the log message if there's something to store; this prevents
+  // existing log messages from being unintentionally overwritten by a blank
+  // message. A new revision will have an empty log message (or $node->log).
+  $revisions_table_values['log'] = $node->log;
+  $revisions_table_types['log'] = "'%s'";
+  
+  $node_table_values = array('nid' => $node->nid, 'vid' => $node->vid,
+                    'title' => $node->title, 'type' => $node->type, 'uid' => $node->uid,
+                    'status' => $node->status, 'created' => $node->created,
+                    'changed' => $node->changed, 'comment' => $node->comment,
+                    'promote' => $node->promote, 'sticky' => $node->sticky);
+
+  $node_table_types = array('nid' => '%d', 'vid' => '%d',
+                    'title' => "'%s'", 'type' => "'%s'", 'uid' => '%d',
+                    'status' => '%d', 'created' => '%d',
+                    'changed' => '%d', 'comment' => '%d',
+                    'promote' => '%d', 'sticky' => '%d');
+
+  //Generate the node table query and the
+  //the node_revisions table query
+  $node_query = 'INSERT INTO {node} ('. implode(', ', array_keys($node_table_types)) .') VALUES ('. implode(', ', $node_table_types) .')';
+  $revisions_query = 'INSERT INTO {node_revisions} ('. implode(', ', array_keys($revisions_table_types)) .') VALUES ('. implode(', ', $revisions_table_types) .')';
+
+  // Insert the node into the database:
+  db_query($node_query, $node_table_values);
+  db_query($revisions_query, $revisions_table_values);
+
+  // Call the node specific callback (if any):
+  node_invoke($node, 'insert');
+  node_invoke_nodeapi($node, 'insert');
+
+  // Update the node access table for this node.
+  node_access_acquire_grants($node);
+
+  return $node->nid;
+}
+

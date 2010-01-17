@@ -1,0 +1,6 @@
+name = Event Notification
+description = Event email notication module with some nice features.
+package = Other
+
+version = "5.x-2.3"
+project = "event_notification"
